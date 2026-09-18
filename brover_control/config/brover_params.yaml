@@ -6,8 +6,8 @@ control_move:
     wheel_radius: 0.0625
     track_width: 0.42
 
-    max_linear_velocity: 0.375
-    max_wheel_velocity: 6.0
+    max_linear_velocity: 1.0
+    max_wheel_velocity: 4.8
     min_wheel_velocity: 1.0
     wheel_deadband: 0.2
 
@@ -22,9 +22,9 @@ radiolink_control:
     publish_period: 0.05
     joystick_timeout: 0.5
 
-    slow_speed: 0.09375
-    normal_speed: 0.1875
-    fast_speed: 0.375
+    slow_speed: 0.2
+    normal_speed: 0.5
+    fast_speed: 1.0
     rotation_scale: 2.5
 
     linear_axis: 1
