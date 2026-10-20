@@ -9,54 +9,81 @@ class LowBatteryLedBlinker(Node):
     def __init__(self):
         super().__init__("bat_monitor")
 
-        self.declare_parameter("battery_topic", "/bat")
+        self.declare_parameter("battery_topics", ["/bat_1", "/bat_2"])
         self.declare_parameter("led_service", "/hmi/led")
-        self.declare_parameter("voltage_threshold", 13.8)
+        self.declare_parameter("voltage_threshold", 19.5)
         self.declare_parameter("blink_period", 0.25)
-        self.declare_parameter("led_interface", 0)
+        self.declare_parameter("led_interface", 1)
 
+        self.battery_topics = self.get_parameter("battery_topics").value
         self.voltage_threshold = self.get_parameter("voltage_threshold").value
         self.led_interface = self.get_parameter("led_interface").value
-        self.low_battery = False
+
+        self.voltages = {
+            topic: None for topic in self.battery_topics
+        }
+
+        self.battery_alarm = False
         self.led_state = False
         self.pending_led_call = None
         self.last_led = None
 
-        self.create_subscription(
-            BatteryState,
-            self.get_parameter("battery_topic").value,
-            self.battery_callback,
-            10,
-        )
+        for topic in self.battery_topics:
+            self.create_subscription(
+                BatteryState,
+                topic,
+                lambda msg, battery_topic=topic: self.battery_callback(
+                    msg, battery_topic
+                ),
+                10,
+            )
+
         self.led_client = self.create_client(
             CallHMILed,
             self.get_parameter("led_service").value,
         )
+
         self.create_timer(
             self.get_parameter("blink_period").value,
             self.timer_callback,
         )
 
-        self.get_logger().info("Low battery LED blinker started")
+        self.get_logger().info(
+            "Battery monitor started: "
+            f"{self.battery_topics}, threshold={self.voltage_threshold:.2f} V"
+        )
 
-    def battery_callback(self, msg):
-        voltage = msg.voltage
-        if voltage <= self.voltage_threshold:
-            if not self.low_battery:
-                self.get_logger().warning(
-                    "Low battery detected: "
-                    f"{voltage:.2f} V <= {self.voltage_threshold:.2f} V"
-                )
-            self.low_battery = True
+    def battery_callback(self, msg, battery_topic):
+        self.voltages[battery_topic] = msg.voltage
+
+        if any(voltage is None for voltage in self.voltages.values()):
             return
 
-        if self.low_battery:
-            self.get_logger().info(
-                f"Battery voltage restored: {voltage:.2f} V"
+        previous_alarm = self.battery_alarm
+
+        self.battery_alarm = all(
+            voltage < self.voltage_threshold
+            for voltage in self.voltages.values()
+        )
+
+        if self.battery_alarm and not previous_alarm:
+            self.get_logger().warning(
+                "Battery alarm: "
+                + ", ".join(
+                    f"{topic}={voltage:.2f} V"
+                    for topic, voltage in self.voltages.items()
+                )
             )
 
-        self.low_battery = False
-        self.led_state = False
+        elif previous_alarm and not self.battery_alarm:
+            self.get_logger().info(
+                "Battery alarm cleared: "
+                + ", ".join(
+                    f"{topic}={voltage:.2f} V"
+                    for topic, voltage in self.voltages.items()
+                )
+            )
+            self.led_state = False
 
     def timer_callback(self):
         if (
@@ -65,25 +92,30 @@ class LowBatteryLedBlinker(Node):
         ):
             return
 
-        if self.low_battery:
+        if self.battery_alarm:
             self.led_state = not self.led_state
+
             if self.led_state:
                 self.send_led(255, 0, 0)
             else:
                 self.send_led(0, 0, 0)
+
             return
 
         self.send_led(0, 255, 0)
 
     def send_led(self, r, g, b):
         desired_led = (r, g, b)
-        if desired_led == self.last_led and not self.low_battery:
+
+        if desired_led == self.last_led and not self.battery_alarm:
             return
+
         if (
             self.pending_led_call is not None
             and not self.pending_led_call.done()
         ):
             return
+
         if not self.led_client.service_is_ready():
             self.get_logger().warning("/hmi/led service is not ready")
             return
@@ -96,7 +128,9 @@ class LowBatteryLedBlinker(Node):
 
         self.last_led = desired_led
         self.pending_led_call = self.led_client.call_async(request)
-        self.pending_led_call.add_done_callback(self.service_response_callback)
+        self.pending_led_call.add_done_callback(
+            self.service_response_callback
+        )
 
     def service_response_callback(self, future):
         try:

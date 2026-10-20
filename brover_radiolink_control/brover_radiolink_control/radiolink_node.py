@@ -1,10 +1,96 @@
+#!/usr/bin/env python3
 import math
+import time
 
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from sensor_msgs.msg import Joy
-from std_msgs.msg import Int8
+from std_srvs.srv import SetBool
+
+
+class OutputService:
+    """Send the latest desired value without blocking joystick callbacks."""
+
+    def __init__(self, node, service_name):
+        self.node = node
+        self.service_name = service_name
+        self.client = node.create_client(SetBool, service_name)
+        self.timeout = float(node.get_parameter("output_service_timeout").value)
+        self.retry_period = float(node.get_parameter("output_retry_period").value)
+        if any(not math.isfinite(v) or v <= 0 for v in (self.timeout, self.retry_period)):
+            raise ValueError("Output service timeout and retry period must be positive")
+
+        # No command exists until the operator uses this control.
+        self.desired = None
+        self.last_successful = None
+        self.pending = None
+        self.deadline = 0.0
+        self.retry_after = 0.0
+
+    def update(self):
+        if self.desired is None:
+            return
+        now = time.monotonic()
+        if self.pending is not None:
+            if now < self.deadline:
+                return
+            self.cancel_pending()
+            self.failed("response timeout")
+            return
+
+        if self.desired == self.last_successful or now < self.retry_after:
+            return
+        if not self.client.service_is_ready():
+            self.retry_after = now + self.retry_period
+            return
+
+        value = bool(self.desired)
+        request = SetBool.Request()
+        request.data = value
+        try:
+            future = self.client.call_async(request)
+        except Exception as exc:
+            self.failed(str(exc))
+            return
+
+        # Once sent, a missing reply leaves the remote state uncertain.
+        self.last_successful = None
+        self.pending = future
+        self.deadline = now + self.timeout
+        future.add_done_callback(
+            lambda completed: self.on_response(completed, value)
+        )
+
+    def on_response(self, future, value):
+        # Ignore responses from requests already removed after a timeout.
+        if future is not self.pending:
+            return
+        self.pending = None
+        try:
+            response = future.result()
+            if response is None:
+                self.failed("empty ROS service response")
+            elif response.success:
+                self.last_successful = value
+                self.retry_after = 0.0
+            else:
+                self.failed(response.message)
+        except Exception as exc:
+            self.failed(str(exc))
+
+    def failed(self, message):
+        self.retry_after = time.monotonic() + self.retry_period
+        self.node.get_logger().warning(
+            f"{self.service_name} request failed: {message}"
+        )
+
+    def cancel_pending(self):
+        future = self.pending
+        self.pending = None
+        if future is not None:
+            self.client.remove_pending_request(future)
+            future.cancel()
 
 
 class RadiolinkController(Node):
@@ -13,12 +99,14 @@ class RadiolinkController(Node):
 
         self.declare_parameter("joy_topic", "joy")
         self.declare_parameter("cmd_vel_topic", "/cmd_vel")
-        self.declare_parameter("rele_topic", "/rele")
-        self.declare_parameter("light_topic", "/light")
+        self.declare_parameter("rele_service", "/rele")
+        self.declare_parameter("light_service", "/light")
 
         self.declare_parameter("publish_period", 0.05)
         self.declare_parameter("joystick_timeout", 0.5)
         self.declare_parameter("light_toggle_timeout", 0.5)
+        self.declare_parameter("output_service_timeout", 5.0)
+        self.declare_parameter("output_retry_period", 1.0)
 
         self.declare_parameter("slow_speed", 0.25)
         self.declare_parameter("normal_speed", 0.5)
@@ -68,16 +156,18 @@ class RadiolinkController(Node):
 
         self.cmd_vel_msg = Twist()
 
-        self.rele_msg = Int8()
-        self.rele_msg.data = 0
-
-        self.light_msg = Int8()
-        self.light_msg.data = 0
+        self.rele_output = OutputService(
+            self, self.get_parameter("rele_service").value,
+        )
+        self.light_output = OutputService(
+            self, self.get_parameter("light_service").value,
+        )
 
         self.enabled = False
         self.last_joy_time = None
 
-        self.light_was_pressed = False
+        self.rele_was_pressed = None
+        self.light_was_pressed = None
         self.last_light_toggle_time = None
 
         self.create_subscription(
@@ -90,18 +180,6 @@ class RadiolinkController(Node):
         self.cmd_vel_pub = self.create_publisher(
             Twist,
             self.get_parameter("cmd_vel_topic").value,
-            10,
-        )
-
-        self.rele_pub = self.create_publisher(
-            Int8,
-            self.get_parameter("rele_topic").value,
-            10,
-        )
-
-        self.light_pub = self.create_publisher(
-            Int8,
-            self.get_parameter("light_topic").value,
             10,
         )
 
@@ -121,10 +199,15 @@ class RadiolinkController(Node):
             self.stop()
             return
 
-        if msg.axes[self.rele_axis] > 0:
-            self.rele_msg.data = 1
-        else:
-            self.rele_msg.data = 0
+        rele_pressed = msg.axes[self.rele_axis] > 0
+        # The first Joy message establishes the initial switch position.
+        # Only a subsequent change creates a relay command.
+        if (
+            self.rele_was_pressed is not None
+            and rele_pressed != self.rele_was_pressed
+        ):
+            self.rele_output.desired = rele_pressed
+        self.rele_was_pressed = rele_pressed
 
         self.update_light(
             msg.axes[self.light_axis]
@@ -153,13 +236,16 @@ class RadiolinkController(Node):
 
     def update_light(self, light_axis_value):
         light_pressed = light_axis_value < 0
+        if self.light_was_pressed is None:
+            self.light_was_pressed = light_pressed
+            return
 
         if (
             light_pressed
             and not self.light_was_pressed
             and self.light_toggle_allowed()
         ):
-            self.light_msg.data = 1 - self.light_msg.data
+            self.light_output.desired = not self.light_output.desired
             self.last_light_toggle_time = self.get_clock().now()
 
         self.light_was_pressed = light_pressed
@@ -214,8 +300,8 @@ class RadiolinkController(Node):
         return max(-1.0, min(1.0, value))
 
     def timer_callback(self):
-        self.rele_pub.publish(self.rele_msg)
-        self.light_pub.publish(self.light_msg)
+        self.rele_output.update()
+        self.light_output.update()
 
         if self.is_joystick_stale():
             self.enabled = False
@@ -252,6 +338,8 @@ def main(args=None):
         pass
     finally:
         radiolink.stop()
+        radiolink.rele_output.cancel_pending()
+        radiolink.light_output.cancel_pending()
         radiolink.destroy_node()
         rclpy.shutdown()
 

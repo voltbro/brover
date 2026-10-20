@@ -4,6 +4,7 @@ import math
 import rclpy
 from geometry_msgs.msg import Pose2D
 from rclpy.node import Node
+from rclpy.executors import ExternalShutdownException
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Float32
 from std_srvs.srv import Empty
@@ -17,7 +18,7 @@ class OdomPose2D(Node):
         self.declare_parameter("imu_topic", "/bhi360/imu")
         self.declare_parameter("odom_topic", "/odom_pose2d")
         self.declare_parameter("wheel_odom_topic_prefix", "/m_odom")
-        self.declare_parameter("wheel_radius", 0.0625)
+        self.declare_parameter("wheel_radius", 0.13)
         self.declare_parameter("publish_period", 0.02)
         self.declare_parameter("max_dt", 0.2)
 
@@ -96,7 +97,7 @@ class OdomPose2D(Node):
             return
 
         left_omega = sum(self.wheel_omegas[:3]) / 3.0
-        right_omega = -sum(self.wheel_omegas[3:]) / 3.0
+        right_omega = sum(self.wheel_omegas[3:]) / 3.0
 
         left_velocity = left_omega * self.wheel_radius
         right_velocity = right_omega * self.wheel_radius
@@ -119,11 +120,11 @@ def main(args=None):
 
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":

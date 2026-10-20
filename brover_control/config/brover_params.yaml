@@ -3,8 +3,8 @@ control_move:
     cmd_vel_topic: /cmd_vel
     wheel_velocity_topic_prefix: /m_vel
 
-    wheel_radius: 0.0625
-    track_width: 0.42
+    wheel_radius: 0.13
+    track_width: 0.8
 
     max_linear_velocity: 1.0
     max_wheel_velocity: 4.8
@@ -39,17 +39,17 @@ odom:
     imu_topic: /bhi360/imu
     odom_topic: /odom_pose2d
     wheel_odom_topic_prefix: /m_odom
-    wheel_radius: 0.0625
+    wheel_radius: 0.13
     publish_period: 0.02
     max_dt: 0.2
 
 bat_monitor:
   ros__parameters:
-    battery_topic: /bat
+    battery_topics: ["/bat_1", "/bat_2"]
     led_service: /hmi/led
-    voltage_threshold: 13.8
+    voltage_threshold: 19.5
     blink_period: 0.25
-    led_interface: 0
+    led_interface: 1
 
 imu:
   ros__parameters:
