@@ -189,25 +189,20 @@ class RadiolinkController(Node):
         )
 
     def joy_callback(self, msg):
+        if self.is_joystick_stale():
+            self.reset_rele_input()
         self.last_joy_time = self.get_clock().now()
 
         if not self.has_required_axes(msg):
             self.get_logger().warning(
                 "Joy message has too few axes, stopping"
             )
+            self.reset_rele_input()
             self.enabled = False
             self.stop()
             return
 
-        rele_pressed = msg.axes[self.rele_axis] > 0
-        # The first Joy message establishes the initial switch position.
-        # Only a subsequent change creates a relay command.
-        if (
-            self.rele_was_pressed is not None
-            and rele_pressed != self.rele_was_pressed
-        ):
-            self.rele_output.desired = rele_pressed
-        self.rele_was_pressed = rele_pressed
+        self.update_rele(msg.axes)
 
         self.update_light(
             msg.axes[self.light_axis]
@@ -233,6 +228,26 @@ class RadiolinkController(Node):
 
         self.cmd_vel_msg.linear.x = speed * linear_axis
         self.cmd_vel_msg.angular.z = speed * angular_axis
+
+    def reset_rele_input(self):
+        self.rele_was_pressed = None
+        self.rele_output.desired = None
+        self.rele_output.cancel_pending()
+
+    def update_rele(self, axes):
+        value = axes[self.rele_axis]
+        # Joy float32 values can round at the inclusive band boundaries.
+        if not math.isfinite(value) or not 0.48 - 1e-7 <= abs(value) <= 0.58 + 1e-7:
+            self.rele_was_pressed = None
+            return
+
+        pressed = value > 0
+        # Send once per band entry, including the first sample.
+        if pressed != self.rele_was_pressed:
+            self.rele_output.desired = pressed
+            # Another client may have changed the relay since our last command.
+            self.rele_output.last_successful = None
+        self.rele_was_pressed = pressed
 
     def update_light(self, light_axis_value):
         light_pressed = light_axis_value < 0
@@ -300,13 +315,14 @@ class RadiolinkController(Node):
         return max(-1.0, min(1.0, value))
 
     def timer_callback(self):
-        self.rele_output.update()
-        self.light_output.update()
-
         if self.is_joystick_stale():
+            self.reset_rele_input()
             self.enabled = False
             self.stop()
             return
+
+        self.rele_output.update()
+        self.light_output.update()
 
         if self.enabled:
             self.cmd_vel_pub.publish(self.cmd_vel_msg)

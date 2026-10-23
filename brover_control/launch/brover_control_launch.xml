@@ -6,7 +6,7 @@
         output="screen">
         <param
             name="config_file"
-            value="/home/pi/ros2_ws/src/cyphal_ros2_bridge/examples/test_node.json"/>
+            value="/home/bigrover/ros2_ws/src/cyphal_ros2_bridge/examples/test_node.json"/>
     </node>
 
     <node
@@ -16,7 +16,7 @@
         output="screen">
         <param
             name="config_file"
-            value="/home/pi/ros2_ws/src/cyphal_ros2_bridge/examples/power.json"/>
+            value="/home/bigrover/ros2_ws/src/cyphal_ros2_bridge/examples/power.json"/>
  </node>
  <arg name="brover_params" default="$(find-pkg-share brover_control)/config/brover_params.yaml"/>
  <node pkg="brover_move_control" exec="move_node" name="control_move">
