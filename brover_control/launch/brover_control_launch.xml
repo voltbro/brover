@@ -6,7 +6,7 @@
   <node pkg="brover_move_control" exec="move_node" name="control_move">
     <param from="$(var brover_params)"/>
   </node>
-  <node pkg="joy" exec="joy_node" name="joy"/>
+  <node pkg="brover_radiolink_control" exec="direct_joystick_node" name="joy"/>
   <node pkg="brover_radiolink_control" exec="radiolink_node" name="radiolink_control">
     <param from="$(var brover_params)"/>
   </node>

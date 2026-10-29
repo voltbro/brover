@@ -13,8 +13,6 @@
   <exec_depend>brover_odom_simple</exec_depend>
   <exec_depend>brover_radiolink_control</exec_depend>
   <exec_depend>cyphal_ros2_bridge</exec_depend>
-  <exec_depend>joy</exec_depend>
-
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>

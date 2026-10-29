@@ -26,13 +26,14 @@ radiolink_control:
     normal_speed: 0.1875
     fast_speed: 0.375
     rotation_scale: 2.5
+    linear_direction: -1.0
+    angular_direction: -1.0
 
     linear_axis: 1
     angular_axis: 3
     speed_axis: 6
-    safety_axis_left: 2
-    safety_axis_right: 4
-    safety_threshold: 0.8
+    safety_axis: 4
+    safety_threshold: -0.8
 
 odom:
   ros__parameters:
