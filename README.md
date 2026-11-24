@@ -33,7 +33,7 @@ test_encoders.py            терминальный монитор значен
 
 Ветка `kosmo-arm` включает управление манипулятором в штатный запуск BRover. Для перехода с `main` на настроенном ровере с ROS 2 Jazzy выполните следующие шаги.
 
-1. Подключитесь к Raspberry Pi по SSH. Поставьте CH5 в среднее положение, отцентрируйте стики и остановите управление. Если для проверки запущена временная пользовательская служба `kosmo-arm-test.service`, сначала остановите её командой `systemctl --user stop kosmo-arm-test.service`.
+1. Подключитесь к Raspberry Pi по SSH. Поставьте CH5 в среднее положение, отцентрируйте стики и остановите управление.
 
    ```bash
    sudo systemctl stop ros_nodes.service
@@ -41,18 +41,11 @@ test_encoders.py            терминальный монитор значен
    git status --short --branch
    ```
 
-2. Сохраните свои незакоммиченные правки, если они есть. Если локальная ветка `kosmo-arm` уже существует, достаточно выполнить `git switch kosmo-arm`. Для первого перехода из клона, в котором ветка доступна на `origin`, выполните:
+2. Сохраните локальные правки, если они есть. Получите ветку из удалённого репозитория и создайте на ровере локальную ветку `kosmo-arm`, отслеживающую `origin/kosmo-arm`.
 
    ```bash
-   git fetch origin kosmo-arm
+   git fetch origin
    git switch --track origin/kosmo-arm
-   ```
-
-   Если ветка доступна только на компьютере разработчика, на компьютере в репозитории создайте файл командой `git bundle create kosmo-arm.bundle kosmo-arm` и скопируйте его на Raspberry Pi в домашнюю папку. На ровере выполните:
-
-   ```bash
-   git fetch ~/kosmo-arm.bundle kosmo-arm:refs/heads/kosmo-arm
-   git switch kosmo-arm
    ```
 
 3. Для ServoBoard используйте [скетч KosmoArmCan](firmware/KosmoArmCan/KosmoArmCan.ino) из этой ветки. При первой установке загрузите его по SWD в VB32G4. ServoBoard подключается к CAN1, который на проверенном ровере соответствует Linux-интерфейсу `can1`.
