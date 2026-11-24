@@ -1,7 +1,15 @@
+import math
+from time import monotonic
+
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from sensor_msgs.msg import Joy
+
+from .arm_control import ArmCan, ArmControls, HOLD_RATES, switch_position
+
+
+MODE_SETTLE_SECONDS = 0.3
 
 
 class RadiolinkController(Node):
@@ -26,6 +34,12 @@ class RadiolinkController(Node):
 
         self.declare_parameter("safety_axis", 4)
         self.declare_parameter("safety_threshold", -0.8)
+        self.declare_parameter("arm_enable_axis", 5)
+        self.declare_parameter("arm_enable_button", -1)
+        self.declare_parameter("arm_enable_direction", 1.0)
+        self.declare_parameter("arm_left_vertical_axis", 2)
+        self.declare_parameter("arm_right_horizontal_axis", 0)
+        self.declare_parameter("arm_deadzone", 0.12)
 
         self.joystick_timeout = self.get_parameter("joystick_timeout").value
         self.slow_speed = self.get_parameter("slow_speed").value
@@ -44,12 +58,31 @@ class RadiolinkController(Node):
         self.enabled = False
         self.last_joy_time = None
         self.initial_stop_sent = False
+        self.home_sent = False
+        self.arm_command = (False, HOLD_RATES)
+        self.mode = None
+        self.mode_since = 0.0
+        self.mode_ready = False
+        self.drive_ready = False
+        self.next_can_error_log = 0.0
+
+        self.left_vertical = self.get_parameter("arm_left_vertical_axis").value
+        self.right_horizontal = self.get_parameter("arm_right_horizontal_axis").value
+        self.arm_can = ArmCan()
+        self.arm = ArmControls(self.get_parameter("arm_deadzone").value)
+        self.arm_enable_axis = self.get_parameter("arm_enable_axis").value
+        self.arm_enable_button = self.get_parameter("arm_enable_button").value
+        self.arm_enable_direction = self.get_parameter("arm_enable_direction").value
+        if not -1.0 <= self.safety_threshold < -0.2:
+            raise ValueError("safety_threshold must be in [-1, -0.2)")
+        if self.arm_enable_direction not in (-1.0, 1.0):
+            raise ValueError("arm_enable_direction must be -1 or 1")
 
         self.create_subscription(
             Joy,
             self.get_parameter("joy_topic").value,
             self.joy_callback,
-            10,
+            1,
         )
         self.cmd_vel_pub = self.create_publisher(
             Twist,
@@ -62,45 +95,99 @@ class RadiolinkController(Node):
         )
 
     def joy_callback(self, msg):
-        self.last_joy_time = self.get_clock().now()
+        if self.is_joystick_stale():
+            self.reset_modes()
+        self.last_joy_time = monotonic()
 
         if not self.has_required_axes(msg):
-            self.get_logger().warning(
-                "В сообщении Joy недостаточно осей, остановка"
-            )
+            self.reset_modes()
             self.enabled = False
             self.stop()
             return
 
         was_enabled = self.enabled
-        self.enabled = self.is_safety_enabled(msg)
+        self.update_modes(msg)
         if not self.enabled:
             if was_enabled:
                 self.stop()
             return
 
         speed = self.select_speed(msg.axes[self.speed_axis])
+        linear = msg.axes[self.linear_axis]
+        angular = msg.axes[self.angular_axis]
+        linear = 0.0 if abs(linear) <= self.arm.deadzone else linear
+        angular = 0.0 if abs(angular) <= self.arm.deadzone else angular
         self.cmd_vel_msg.linear.x = (
-            speed * self.linear_direction * msg.axes[self.linear_axis]
+            speed * self.linear_direction * linear
         )
         self.cmd_vel_msg.angular.z = (
             speed
             * self.rotation_scale
             * self.angular_direction
-            * msg.axes[self.angular_axis]
+            * angular
         )
 
     def has_required_axes(self, msg):
-        max_axis = max(
+        axes = [
             self.linear_axis,
             self.angular_axis,
             self.speed_axis,
             self.safety_axis,
+        ]
+        if (0 <= self.safety_axis < len(msg.axes)
+                and msg.axes[self.safety_axis] >= -self.safety_threshold):
+            axes.extend((self.left_vertical, self.right_horizontal))
+        return all(
+            0 <= axis < len(msg.axes)
+            and math.isfinite(msg.axes[axis])
+            and -1.0 <= msg.axes[axis] <= 1.0
+            for axis in axes
         )
-        return len(msg.axes) > max_axis
 
-    def is_safety_enabled(self, msg):
-        return msg.axes[self.safety_axis] <= self.safety_threshold
+    def reset_modes(self):
+        self.mode = None
+        self.mode_ready = False
+        self.drive_ready = False
+        self.arm.reset()
+        self.arm_command = (False, HOLD_RATES)
+
+    def update_modes(self, msg):
+        mode = switch_position(msg.axes[self.safety_axis], -self.safety_threshold)
+        if mode != self.mode:
+            self.mode = mode
+            self.mode_since = monotonic()
+            self.drive_ready = False
+            self.arm.reset()
+        if mode == 0:
+            self.mode_ready = True
+
+        left = msg.axes[self.angular_axis]
+        right = msg.axes[self.linear_axis]
+        mode_settled = monotonic() - self.mode_since >= MODE_SETTLE_SECONDS
+        if self.mode_ready and mode == -1 and mode_settled:
+            self.drive_ready |= max(abs(left), abs(right)) <= self.arm.deadzone
+        self.enabled = self.drive_ready and mode == -1
+        self.arm_command = (False, HOLD_RATES)
+        if self.mode_ready and mode == 1 and mode_settled:
+            bank = switch_position(msg.axes[self.speed_axis])
+            pressed, released = self.arm_button(msg)
+            self.arm_command = self.arm.command(
+                bank, pressed, released, left, msg.axes[self.left_vertical],
+                msg.axes[self.right_horizontal], right,
+            )
+
+    def arm_button(self, msg):
+        if self.arm_enable_button >= 0:
+            index = self.arm_enable_button
+            if index >= len(msg.buttons):
+                return False, False
+            return msg.buttons[index] == 1, msg.buttons[index] == 0
+        if not 0 <= self.arm_enable_axis < len(msg.axes):
+            return False, False
+        value = self.arm_enable_direction * msg.axes[self.arm_enable_axis]
+        if not -1.0 <= value <= 1.0:
+            return False, False
+        return value >= 0.8, value <= -0.8
 
     def select_speed(self, speed_axis_value):
         if speed_axis_value > 0.5:
@@ -110,12 +197,17 @@ class RadiolinkController(Node):
         return self.normal_speed
 
     def timer_callback(self):
+        stale = self.is_joystick_stale()
+        if stale:
+            self.reset_modes()
+        self.send_arm_command()
+
         if not self.initial_stop_sent:
             self.stop()
             self.initial_stop_sent = True
             return
 
-        if self.is_joystick_stale():
+        if stale:
             if self.enabled:
                 self.enabled = False
                 self.stop()
@@ -127,10 +219,30 @@ class RadiolinkController(Node):
     def is_joystick_stale(self):
         if self.last_joy_time is None:
             return True
-        elapsed = (
-            self.get_clock().now() - self.last_joy_time
-        ).nanoseconds / 1e9
-        return elapsed > self.joystick_timeout
+        return monotonic() - self.last_joy_time > self.joystick_timeout
+
+    def send_arm_command(self):
+        try:
+            home = self.arm_command[0] == 2
+            if home and not self.home_sent:
+                # Home requires a recent Hold after a CAN timeout.
+                self.arm_can.send(False, HOLD_RATES)
+            self.arm_can.send(*self.arm_command)
+            self.home_sent = home
+        except (OSError, AttributeError) as error:
+            self.home_sent = False
+            self.arm.reset()
+            self.arm_command = (False, HOLD_RATES)
+            now = monotonic()
+            if now >= self.next_can_error_log:
+                self.get_logger().warning(f"ServoBoard CAN: {error}")
+                self.next_can_error_log = now + 5.0
+
+    def destroy_node(self):
+        self.arm_command = (False, HOLD_RATES)
+        self.send_arm_command()
+        self.arm_can.close()
+        return super().destroy_node()
 
     def stop(self):
         self.cmd_vel_msg.linear.x = 0.0

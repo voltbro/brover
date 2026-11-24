@@ -46,6 +46,7 @@ class DirectJoystick(Node):
         except OSError as error:
             self.get_logger().warning(f"Джойстик отключён: {error}")
             self.close_device()
+            self.publisher.publish(Joy())
             return
 
         # Linux передаёт положение стиков только при его изменении. После
@@ -74,6 +75,8 @@ class DirectJoystick(Node):
             if device_path is None:
                 raise FileNotFoundError
             self.device_fd = os.open(device_path, os.O_RDONLY | os.O_NONBLOCK)
+            self.axes = [0.0] * 8
+            self.buttons = [0]
             self.received_control_input = False
             self.get_logger().info(f"Джойстик подключён: {device_path}")
             self.waiting_for_device = False
