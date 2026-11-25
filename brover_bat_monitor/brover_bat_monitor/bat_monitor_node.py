@@ -27,6 +27,7 @@ class LowBatteryLedBlinker(Node):
         self.led_state = False
         self.pending_led_call = None
         self.last_led = None
+        self.user_led_sent = False
 
         for topic in self.battery_topics:
             self.create_subscription(
@@ -121,6 +122,14 @@ class LowBatteryLedBlinker(Node):
             return
 
         request = CallHMILed.Request()
+
+        if not self.user_led_sent:
+            blue = CallHMILed.Request()
+            blue.led.interface = 0
+            blue.led.b = 255
+            self.led_client.call_async(blue)
+            self.user_led_sent = True
+
         request.led.r = r
         request.led.g = g
         request.led.b = b

@@ -194,12 +194,9 @@ class RadiolinkController(Node):
         self.last_joy_time = self.get_clock().now()
 
         if not self.has_required_axes(msg):
-            self.get_logger().warning(
-                "Joy message has too few axes, stopping"
-            )
+            self.get_logger().warning("Joy message has too few axes, stopping")
             self.reset_rele_input()
-            self.enabled = False
-            self.stop()
+            self.release_motion_control()
             return
 
         self.update_rele(msg.axes)
@@ -208,11 +205,11 @@ class RadiolinkController(Node):
             msg.axes[self.light_axis]
         )
 
-        self.enabled = self.is_safety_enabled(msg)
-
-        if not self.enabled:
-            self.stop()
+        if not self.is_safety_enabled(msg):
+            self.release_motion_control()
             return
+
+        self.enabled = True
 
         speed = self.select_speed(
             msg.axes[self.speed_axis]
@@ -317,8 +314,7 @@ class RadiolinkController(Node):
     def timer_callback(self):
         if self.is_joystick_stale():
             self.reset_rele_input()
-            self.enabled = False
-            self.stop()
+            self.release_motion_control()
             return
 
         self.rele_output.update()
@@ -337,6 +333,11 @@ class RadiolinkController(Node):
         ).nanoseconds / 1e9
 
         return elapsed > self.joystick_timeout
+    
+    def release_motion_control(self):
+        if self.enabled:
+            self.enabled = False
+            self.stop()
 
     def stop(self):
         self.cmd_vel_msg.linear.x = 0.0
